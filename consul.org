@@ -1,0 +1,342 @@
+* Consul
+** 介绍
+Consul, a distributed service discovery tool and key value store.
+Consul uses a gossip protocol (known as Serf) to manage cluster membership, failure detection, and general orchestration. 
+Managing cluster state via Serf is only part of the picture, though; the cluster must also manage consistency via a consensus protocol known as Raft. 
+
+Every node that provides services to Consul runs a Consul agent. Running an agent is not required for discovering other services or getting/setting key/value data. The agent is responsible for health checking the services on the node as well as the node itself.
+
+The agents talk to one or more Consul servers. The Consul servers are where data is stored and replicated. The servers themselves elect a leader. 
+
+Components of your infrastructure that need to discover other services or nodes can query any of the Consul servers or any of the Consul agents. The agents forward queries to the servers automatically.
+*** 术语
+- Agent : An agent is the long running daemon on every member of the Consul cluster. 
+- Client : A client is an agent that forwards all RPCs to a server. 
+- Server : A server is an agent with an expanded set of responsibilities including participating in the Raft quorum, maintaining cluster state, responding to RPC queries, exchanging WAN gossip with other datacenters, and forwarding queries to leaders or remote datacenters.
+- Datacenter : We define a datacenter to be a networking environment that is private, low latency, and high bandwidth.
+- Consensus
+- Gossip
+
+[[[[https://www.consul.io/assets/images/consul-arch-420ce04a.png]]]Archtecture:w
+Map]
+** 安装
+1. 下载（https://www.consul.io/downloads.html）
+2. 解压并保存到一个位置
+** 运行
+The single Consul binary you downloaded above can run either as 
+a server (which actively participates in the consensus protocol) or as 
+a client (which forwards requests to a server). 
+If you are running Consul as a server, you’ll need to follow a set of 
+instructions to bring up the Consul servers as a functioning cluster.
+
+-If, on the other hand, you’re running Consul as a client to connect to an
+existing Consul cluster, not too much additional is required:
+
+- If you’re running Consul (as a client) on a system where Consul is already
+running (as a server/daemon), you can just run consul directly. For example, if
+you wanted to see a list of the members of the Consul cluster, you could just
+run consul members. If you running Consul (as a client) on a system that is not
+part of the Consul cluster, then you’ll need to tell Consul where to find the
+cluster by adding the -rpc-addr parameter. For example, if a host with IP
+address 10.10.10.10 was part of the Consul cluster, you’d run consul members
+-rpc-addr=10.10.10.10:8400 (8400 is the default port for Consul to listen for
+RPCs) to see a list of the members in the cluster. 
+
+** 与Consul交互 
+The consul command is really only for interacting with the cluster itself, such
+as to execute a command on the Consul cluster nodes, or to reload a Consul
+node’s configuration. Applications would interact with Consul either via
+service definition files, via the HTTP API, or via DNS. 
+
+- Service definition files是JSON文件，用来告诉Consul哪些服务可用和在哪
+- HTTP API用来向Consul注册或查询服务
+- 用户和应用使用DNS来发现服务
+
+** 服务
+*** 注册服务
+1. 创建一个Consul配置的目录。Consul会加载目录下的所有配置文件
+2. 编写服务定义配置文件
+#+BEGIN_SRC shell
+$ echo '{"service": {"name": "web", "tags": ["rails"], "port": 80}}' \
+    | sudo tee /etc/consul.d/web.json
+#+END_SRC
+3. 重启服务
+#+BEGIN_SRC 
+$ consul agent -dev -config-dir=/etc/consul.d
+==> Starting Consul agent...
+...
+    [INFO] agent: Synced service 'web'
+...
+#+END_SRC
+*** 查询服务
+**** DNS API
+DNS名称： NAME.service.consul
+#+BEGIN_SRC 
+$ dig @127.0.0.1 -p 8600 web.service.consul
+#+END_SRC
+/A/记录只能仅仅获取IP地址.可以通过/SRV/记录来获取整个IP地址与端口对。
+#+BEGIN_SRC 
+$ dig @127.0.0.1 -p 8600 web.service.consul SRV
+#+END_SRC
+也能通过tag来使得DNS API过滤服务。基于tag的服务查询格式是 TAG.NAME.service.consul
+**** HTTP API
+也能通过HTTP API查询服务
+#+BEGIN_SRC 
+$ curl http://localhost:8500/v1/catalog/service/web
+#+END_SRC
+The catalog API gives all nodes hosting a given service. 
+查询健康的实例
+#+BEGIN_SRC 
+curl 'http://localhost:8500/v1/health/service/web?passing'
+#+END_SRC
+*** 更新服务
+服务定义可以通过修改配置文件然后给agent发送一个SIGHUP信号来更新。
+同时，HTTP API也可以用来动态地添加，删除，修改服务。
+
+DNS服务： Mesos-DNS, Consul, SkyDNS(etcd)
+** 集群
+当一个Consul agent启动后，他开始对其他节点是一无所知的：它是一个孤立的独立集群。为了知道其他集群成员
+，它必须join到一个已经存在的集群。为了join一个存在的集群，它仅仅需要知道一个存在的成员，在它加入后，
+它会与这个知道的成员gossip，然后快速的发现集群中的其他成员。一个Consul agent能加入任何其他的agent，
+不仅仅是在server mode的agent.
+*** 启动Agents
+- 启动第一个agent
+#+BEGIN_SRC 
+consul agent -server -bootstrap-expect=1 \
+    -data-dir=/tmp/consul -node=agent-one -bind=172.20.20.10 \
+    -config-dir=/etc/consul.d
+#+END_SRC
+集群内的每个node必须有一个唯一的名字。默认使用机器的hostname.但我们可以通过-node参数来指定。
+也可以通过bind参数来指定Consul的监听地址，必须是集群中其他node能访问到的。
+第一个node扮演汲取中的server，所以我们通过server参数来指定。
+而-bootstrap-expect暗示这个Consul服务我们希望有多少个其他的服务节点加入进来.The purpose
+ of this flag is to delay the bootstrapping of the replicated log until the
+ expected number of servers has successfully joined.
+最后指定config-dir保证服务与检测定义能被找到。
+- 启动第二个agent
+#+BEGIN_SRC 
+consul agent -data-dir=/tmp/consul -node=agent-two \
+    -bind=172.20.20.11 -config-dir=/etc/consul.d
+#+END_SRC
+*** 加入一个集群
+在第一个node上执行
+#+BEGIN_SRC 
+vagrant@n1:~$ consul join 172.20.20.11
+#+END_SRC
+然后在双方的终端查看是否成功
+#+BEGIN_SRC 
+vagrant@n2:~$ consul members
+Node       Address            Status  Type    Build  Protocol
+agent-two  172.20.20.11:8301  alive   client  0.5.0  2
+agent-one  172.20.20.10:8301  alive   server  0.5.0  2
+#+END_SRC
+*** 在启动时自动加入集群
+- 使用atlas-join
+#+BEGIN_SRC 
+$ consul agent -atlas-join \
+  -atlas=ATLAS_USERNAME/infrastructure \
+  -atlas-token="YOUR_ATLAS_TOKEN"
+#+END_SRC
+- 使用join flag
+  Alternatively, you can join a cluster at startup using the -join flag 
+or start_join setting with hardcoded addresses of other known Consul agents.
+*** 查询Nodes
+- DNS API
+For the DNS API, the structure of the names is NAME.node.consul or 
+NAME.node.DATACENTER.consul. If the datacenter is omitted, 
+Consul will only search the local datacenter.
+#+BEGIN_SRC 
+vagrant@n1:~$ dig @127.0.0.1 -p 8600 agent-two.node.consul
+#+END_SRC
+- HTTP API
+*** 退出集群
+退出集群，可以使用CTRL-C来优雅的结束一个agent或者强制kill一个agent。优雅的离开允许node的状态
+迁移到left状态，否则其他节点会认为它是failed状态。
+
+** 健康检查
+*** 定义检查
+和服务一样，一个检查也能通过check definition来注册或者通过HTTP API来注册。
+#+BEGIN_SRC shell
+# host-level check
+vagrant@n2:~$ echo '{"check": {"name": "ping",
+  "script": "ping -c1 google.com >/dev/null", "interval": "30s"}}' \
+  >/etc/consul.d/ping.json
+
+# modify service
+vagrant@n2:~$ echo '{"service": {"name": "web", "tags": ["rails"], "port": 80,
+  "check": {"script": "curl localhost >/dev/null 2>&1", "interval": "10s"}}}' \
+  >/etc/consul.d/web.json
+#+END_SRC
+一个基于script的健康检查，check将以启动consul进程的同一用户身份运行。如果命令返回非零退出码，
+则node会被标记为非健康的。
+*** 检查健康检查
+使用HTTP API来检查checks.
+#+BEGIN_SRC shell
+# 查询失败的检查
+vagrant@n1:~$ curl http://localhost:8500/v1/health/state/critical
+#+END_SRC
+也可以通过DNS来查询服务
+#+BEGIN_SRC shell
+# 不返回任何结果，就是失败
+dig @127.0.0.1 -p 8600 web.service.consul
+#+END_SRC
+** 键值对数据
+There are two ways to interact with the Consul KV store:
+ via the HTTP API and via the Consul KV CLI.
+#+BEGIN_SRC shell
+$ consul kv get redis/config/minconns
+Error! No key exists at: redis/config/minconns
+
+$ consul kv put redis/config/minconns 1
+Success! Data written to: redis/config/minconns
+
+$ consul kv put redis/config/maxconns 25
+Success! Data written to: redis/config/maxconns
+
+$ consul kv put -flags=42 redis/config/users/admin abcd1234
+Success! Data written to: redis/config/users/admin
+
+$ consul kv get -detailed redis/config/minconns
+CreateIndex      207
+Flags            0
+Key              redis/config/minconns
+LockIndex        0
+ModifyIndex      207
+Session          -
+Value            1
+
+# 获取所有的keys
+$ consul kv get -recurse
+redis/config/maxconns:25
+redis/config/minconns:1
+redis/config/users/admin:abcd1234
+
+$ consul kv delete redis/config/minconns
+Success! Deleted key: redis/config/minconns
+
+$ consul kv delete -recurse redis
+Success! Deleted keys with prefix: redis
+
+$ consul kv put foo bar
+$ consul kv get foo
+bar
+$ consul kv put foo zip
+$ consul kv get foo
+zip
+
+$ consul kv put -cas -modify-index=123 foo bar
+Success! Data written to: foo
+
+$ consul kv put -cas -modify-index=123 foo bar
+Error! Did not write to foo: CAS failed
+#+END_SRC
+
+
+* 使用Docker和Consul搭建自动化环境
+https://www.spirulasystems.com/blog/2015/06/25/building-an-automatic-environment-using-consul-and-docker-part-1/
+
+
+* Docker
+** 使用docker(docker client)
+#+BEGIN_SRC shell
+$ docker version
+$ docker --help
+$ docker attach --help
+$ docker ps -l # -l： 只看最后一个启动的容器的细节
+$ docker port <container_name> <container_port> #查询你容器内端口在外部的映射
+$ docker top <container_name> # 查看容器内运行的进程
+$ docker inspect [-f '{{FORMAT}}'] <container_name> # 查看容器的配置与状态信息
+$ docker start <container_name> #restart container
+$ docker rm <container_name> # 删除容器
+$ docker images # 列出本地的镜像
+$ docker pull <image_name> #下载镜像
+$ docker push <username>/<image_name> # 上传镜像
+$ docker rmi <image_name> # 本地删除镜像
+$ docker history <image_name> # 查看本地镜像layers
+$ docker ps -s #查看容器大小
+#+END_SRC
+Docker通过network driver来支持网络化容器。默认提供两个网络驱动:bridge和overlay.
+每个Docker Engine自动包含3个默认网络：
+#+BEGIN_SRC shell
+$ docker network ls # 列出网络
+# The network named bridge is a special network. Unless you tell it otherwise, Docker always launches your containers in this network.
+$ docker network inspect bridge # 获取网络信息
+$ docker network disconnect bridge <container_name> # 将容器从指定网络中移除
+# Docker Engine natively supports both bridge networks and overlay networks.
+# A bridge network is limited to a single host running Docker Engine.
+# An overlay network can include multiple hosts and is a more advanced topic.
+$ docker network create -d bridge my-bridge-network # -d 使用bridge驱动 
+$ docker run -d --net=my-bridge-network --name db training/postgres #将容器加入到一个网络
+$ docker network connect my-bridge-network web # 一个容器attach到多个网络上，默认创建在bridge网络上
+#+END_SRC
+管理数据的两个主要方法：1. 数据卷 2.数据卷容器
+数据卷就是在一个或多个容器内特殊设计的一个目录，它绕过了ufs文件系统
+*** run
+#+BEGIN_SRC shell
+$ docker run ubuntu /bin/echo 'Hello world'
+#+END_SRC
+Docker containers only run as long as the command you specify is active. 
+- 交互式
+#+BEGIN_SRC shell
+-t : 在容器内分配一个伪终端
+-i : 获取到容器的标准输入(STDIN),用于交互式连接
+#+END_SRC
+- 后台式
+#+BEGIN_SRC shell
+$ docker run -d ubuntu /bin/sh -c "while true; do echo hello world; sleep 1; done"
+-d : 在后台运行容器(daemonize it)
+$ docker logs -f <container_name> #查看docker内部信息, -f就像tail -f
+$ docker stop <container_name> #停止docker
+-P : 将容器内部需要的网络端口都映射到host上。
+-p <host_port>:<container_port> : 
+#+END_SRC
+** build your images
+*** Dockerfile
+创建一个新的文件夹，在里面创建一个Dockerfile文件，内容如下：
+#+BEGIN_SRC yaml
+FROM docker/whalesay:latest
+RUN apt-get -y update && apt-get install -y fortunes
+CMD /usr/games/fortune -a | cowsay
+#+END_SRC
+*** build
+#+BEGIN_SRC shell
+$ docker build -t docker-whale .
+$ docker tag 7d9495d03763[image id] maryatdocker[account name]/docker-whale[image name]:latest[version label/tag]
+$ docker login
+$ docker push maryatdocker/docker-whale
+#+END_SRC
+*** 基于容器创建镜像
+- 创建容器
+#+BEGIN_SRC  shell
+$ docker run -t -i training/sinatra /bin/bash
+root@0b2616b0e5a8:/#
+#+END_SRC
+- 进入容器进行修改并退出
+- 提交修改
+#+BEGIN_SRC shell
+$ docker commit -m "Added json gem" -a "Kate Smith" 0b2616b0e5a8 ouruser/sinatra:v2
+#+END_SRC
+
+** Swarm Mode
+*** 关键概念
+- 什么是swarm
+    swarm就是Docker Engines或nodes(所有你部署服务的地方)的集群。当你的docker运行在非
+swarm mode时，你执行的是容器命令，当运行在swarm mode时，你就在调配服务。你能将swarm服务和
+单独的容器运行在同一个Docker实例上。
+- 什么是node
+   一个node就是一个参与swarm的docker engine实例。你也可以将它想象为一个Docker node.
+为了部署你的应用到swarm，你提交一个服务定义给一个manager node.manager node分发工作单元(称为
+tasks)给工作node.
+   manager nodes也执行调配与集群管理功能，用来维护swarm在要求的状态。manager nodes选择一个leader
+来实施调配任务。
+   work nodes接受和执行从manager nodes分发过来的任务。
+- 服务与任务
+   一个服务就是在work nodes上执行的任务的定义。它是swarm系统的中心结构和用来与swarm进行有胡交互
+的主root.
+  当你创建一个服务时，你指定使用哪个容器镜像和在荣里执行哪些命令。
+  在冗余服务模型下，swarm管理者分布一定数量的冗余任务在nodes上。
+  在全局服务，swarm在集群每个可用的node上都跑一个服务的任务。
+  一个task代表一个Docker容器和跑在容器里面的命令。它是swarm的原子调度单元。一旦一个任务分配给了
+一个mnode，那么他就不能移动给其他node。
+  
+* vagrant
