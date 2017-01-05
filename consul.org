@@ -249,6 +249,7 @@ $ docker inspect [-f '{{FORMAT}}'] <container_name> # 查看容器的配置与�
 $ docker start <container_name> #restart container
 $ docker rm <container_name> # 删除容器
 $ docker images # 列出本地的镜像
+$ docker search <image_name> # 查询镜像
 $ docker pull <image_name> #下载镜像
 $ docker push <username>/<image_name> # 上传镜像
 $ docker rmi <image_name> # 本地删除镜像
@@ -270,7 +271,38 @@ $ docker run -d --net=my-bridge-network --name db training/postgres #将容器�
 $ docker network connect my-bridge-network web # 一个容器attach到多个网络上，默认创建在bridge网络上
 #+END_SRC
 管理数据的两个主要方法：1. 数据卷 2.数据卷容器
-数据卷就是在一个或多个容器内特殊设计的一个目录，它绕过了ufs文件系统
+数据卷就是在一个或多个容器内特殊设计的一个目录，它绕过了ufs文件系统。数据卷设计用来长期保存数据，不依赖容器
+的生们周期。
+#+BEGIN_SRC shell
+# -v with docker create and docker run
+# 下面的命令会在容器内创建一个新卷/webapp
+$ docker run -d -P --name web -v /webapp training/webapp python app.py
+# 定位一个卷
+$ docker inspect web
+# 将主机的目录当作数据卷挂载到容器内
+$ docker run -d -P --name web -v /src/webapp:/webapp training/webapp python app.py
+# 数据卷默认是可读可写的，可以指定只读的
+$ docker run -d -P --name web -v /src/webapp:/webapp:ro training/webapp python app.py
+# 挂载共享存储卷作为数据卷
+$ docker run -d -P \
+  --volume-driver=flocker \
+  -v my-named-volume:/webapp \
+  --name web training/webapp python app.py
+# 将主机的文件当作数据卷挂载到容器内 
+$ docker run --rm -it -v ~/.bash_history:/root/.bash_history ubuntu /bin/bash
+# 创建一个新的有名容器，带着一个用来共享的卷
+$ docker create -v /dbdata --name dbstore training/postgres /bin/true
+# 其他容器使用--volumes-from来挂载在这个容器上的/dbdata卷
+$ docker run -d --volumes-from dbstore --name db1 training/postgres
+$ docker run -d --volumes-from dbstore --name db2 training/postgres
+# 备份
+$ docker run --rm --volumes-from dbstore -v $(pwd):/backup ubuntu tar cvf /backup/backup.tar /dbdata
+# restore
+$ docker run -v /dbdata --name dbstore2 ubuntu /bin/bash
+$ docker run --rm --volumes-from dbstore2 -v $(pwd):/backup ubuntu bash -c "cd /dbdata && tar xvf /backup/backup.tar --strip 1"
+# 移除数据卷
+$ docker run --rm -v /foo -v awesome:/bar busybox top
+#+END_SRC
 *** run
 #+BEGIN_SRC shell
 $ docker run ubuntu /bin/echo 'Hello world'
