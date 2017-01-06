@@ -349,6 +349,45 @@ root@0b2616b0e5a8:/#
 $ docker commit -m "Added json gem" -a "Kate Smith" 0b2616b0e5a8 ouruser/sinatra:v2
 #+END_SRC
 
+*** Dockerfile
+- FROM
+- LABEL
+- RUN
+- CMD
+- EXPOSE
+  说明容器在哪些端口上监听连接。
+- ENV
+  更新容器内的PATH环境变量,提供服务希望容器化所需要的环境变量，或者提供通用变量
+#+BEGIN_SRC shell
+ENV PG_MAJOR 9.3
+ENV PG_VERSION 9.3.4
+RUN curl -SL http://example.com/postgres-$PG_VERSION.tar.xz | tar -xJC /usr/src/postgress && …
+ENV PATH /usr/local/postgres-$PG_MAJOR/bin:$PATH
+#+END_SRC
+- ADD/COPY
+  往容器内拷贝文件
+- ENTRYPOINT
+  最好的用处是设置镜像的主命令，允许这个镜像当作命令使用(然后使用CMD作为默认参数)
+#+BEGIN_SRC yaml
+ENTRYPOINT ["s3cmd"]
+CMD ["--help"]
+#+END_SRC
+则可以直接运行镜像，就会执行s3cmd --help, 也可以使用正确的参数来执行
+#+BEGIN_SRC shell
+$ docker run s3cmd ls s3://mybucket
+#+END_SRC
+- VOLUME
+  向外暴露容器创建的存储区域。
+- USER
+  如果服务运行不需要特权，使用USER来更换成非root用户。创建用户：
+#+BEGIN_SRC yaml
+RUN groupadd -r postgres && useradd -r -g postgres postgres.
+#+END_SRC
+- WORKDIR
+- ONBUILD
+  An ONBUILD command executes after the current Dockerfile build completes. ONBUILD executes in any child image derived FROM the current image. Think of the ONBUILD command as an instruction the parent Dockerfile gives to the child Dockerfile.
+  A Docker build executes ONBUILD commands before any command in a child Dockerfile.
+
 ** Swarm Mode
 *** 关键概念
 - 什么是swarm
@@ -370,5 +409,181 @@ tasks)给工作node.
   在全局服务，swarm在集群每个可用的node上都跑一个服务的任务。
   一个task代表一个Docker容器和跑在容器里面的命令。它是swarm的原子调度单元。一旦一个任务分配给了
 一个mnode，那么他就不能移动给其他node。
-  
+*** 创建集群  
+**** create a swarm
+#+BEGIN_SRC shell
+$ docker swarm init --advertise-addr 192.168.99.100
+Swarm initialized: current node (dxn1zf6l61qsb1josjja83ngz) is now a manager.
+
+To add a worker to this swarm, run the following command:
+
+    docker swarm join \
+    --token SWMTKN-1-49nj1cmql0jkz5s954yi3oex3nedyz0fb0xx14ie39trti4wxv-8vxv8rssmk743ojnwacrr2e7c \
+    192.168.99.100:2377
+
+To add a manager to this swarm, run 'docker swarm join-token manager' and follow the instructions.
+#+END_SRC
+查看方法：
+#+BEGIN_SRC shell
+$ docker info #看swarm的当前状态
+$ docker node ls # 看nodes的信息
+#+END_SRC
+**** 添加nodes
+执行在“create a swarm”中init命令给出的join命令。如果忘记里，则在manager node上执行如下命令
+#+BEGIN_SRC shell
+$ docker swarm join-token worker
+$ docker swarm join-token manager
+$ swarm join-token --rotate worker #废除之前的token，生成新的token
+#+END_SRC
+**** 离开swarm   
+#+BEGIN_SRC shell
+$ docker swarm leave [--force]
+# 在node退出swarm后，可以删除node
+$ docker node rm node-2
+#+END_SRC
+**** 部署服务(service)
+#+BEGIN_SRC shell
+# 创建服务， --name 服务名称  --replicas 多少个运行实例 
+# alpine ping docker.com定义服务
+# --reserve-memory or --reserve-cpu
+$ docker service create --replicas 1 --name helloworld [--mode global] alpine ping docker.com
+9uk4639qpg7npwf3fn2aasksr
+
+$ docker service ls
+ID            NAME        SCALE  IMAGE   COMMAND
+9uk4639qpg7n  helloworld  1/1    alpine  ping docker.com
+#+END_SRC
+- 配置服务的网络
+ - 对外暴露端口
+ - overlay网络
+#+BEGIN_SRC shell
+$ docker network create \
+  --driver overlay \
+  --subnet 10.0.9.0/24 \
+  --opt encrypted \
+  my-network
+# 在将服务attach到overlay网络上之前，这个网络只存在与manager之间。
+$ docker service create \
+  --replicas 3 \
+  --name my-web \
+  --network my-network \
+  nginx
+# 当你创建一个服务attach到overlay网络时，swarm会给服务分配一个VIP(基于服务名映射一个DNS别名)
+# 所以任何容器能通过服务名称来访问服务
+$ docker service inspect \
+  --format='{{json .Endpoint.VirtualIPs}}' \
+  my-web
+#+END_SRC
+  - 使用DNS Round-robin
+#+BEGIN_SRC shell
+$ docker service create \
+  --replicas 3 \
+  --name my-dnsrr-service \
+  --network my-network \
+  --endpoint-mode dnsrr \
+  nginx
+#+END_SRC
+**** 监测服务
+#+BEGIN_SRC shell
+$ docker service inspect --pretty helloworld # 查看服务的细节信息
+
+ID:		9uk4639qpg7npwf3fn2aasksr
+Name:		helloworld
+Mode:		REPLICATED
+ Replicas:		1
+Placement:
+UpdateConfig:
+ Parallelism:	1
+ContainerSpec:
+ Image:		alpine
+ Args:	ping docker.com
+
+$ docker service ps helloworld # 查看哪些nodes在运行服务
+$ docker ps # 在运行node上查看任务容器的信息 
+#+END_SRC
+**** Scale服务
+使用如下命令更改swarm中运行服务的期望状态
+#+BEGIN_SRC shell
+$ docker service scale <SERVICE-ID>=<NUMBER-OF-TASKS>
+#例如
+$ docker service scale helloworld=5
+# 运行完后，使用docker service ps helloworld,会看到新建了4个实例，以扩展到5个
+#+END_SRC
+**** 删除服务
+#+BEGIN_SRC shell
+$ docker service rm helloworld
+#+END_SRC  
+**** 滚动升级 
+#+BEGIN_SRC shell
+$ docker service create \
+  --replicas 3 \
+  --name redis \
+  --update-delay 10s \  #配置升级间的间隔
+  redis:3.0.6
+# --update-parallelism 可以配置可以同时升级的最大服务任务数目
+# --update-failure-action 配置升级失败时的动作(默认pause)，跟随"docker service create"或"docker service update"
+$ docker service update --image redis:3.0.7 redis
+# 失败后pause，则通过下面命令继续
+$ docker service update redis
+#+END_SRC
+**** Drain node
+通过控制node为drain使得manger不分发任务给这个node，并且在其他ACTIVE的node上加载一个新的任务实例
+#+BEGIN_SRC shell
+$ docker node update --availability drain worker1
+$ docker node inspect --pretty worker1 #Availability 为 Drain
+$ docker service ps redis # 在worker上的服务迁移到了其他Nodes
+#+END_SRC
+**** routing mesh
+The routing mesh enables each node in the swarm to accept connections on published ports for any service running in the swarm, even if there’s no task running on the node. The routing mesh routes all incoming requests to published ports on available nodes to an active container.
+In order to use the ingress network in the swarm, you need to have the following ports open between the swarm nodes before you enable swarm mode:
+- Port 7946 TCP/UDP for container network discovery.
+- Port 4789 UDP for the container ingress network.
+#+BEGIN_SRC shell
+$ docker service create --name <SERVICE-NAME> --publish <PUBLISHED-PORT>:<TARGET-PORT> <IMAGE>
+#例如
+$ docker service create \
+  --name my-web \
+  --publish 8080:80 \
+  --replicas 2 \
+  nginx
+# 给已存在的服务添加publish端口
+$ docker service update \
+  --publish-add <PUBLISHED-PORT>:<TARGET-PORT> \
+  <SERVICE>
+# 配置端口类型
+$ docker service create --name dns-cache -p 53:53 dns-cache # 默认TCP
+$ docker service create --name dns-cache -p 53:53/tcp dns-cache # 与上类似
+$ docker service create --name dns-cache -p 53:53/tcp -p 53:53/udp dns-cache # TCP and UDP
+$ docker service create --name dns-cache -p 53:53/udp dns-cache # UDP
+#+END_SRC
+[[https://docs.docker.com/engine/swarm/images/ingress-routing-mesh.png]]
+
+*** Swarm如何工作的
+**** Node如何工作
+  一个Swarm由一个或多个node组成：运行1.12或以后版本的swarm mode的Docker Engine物理或虚拟 机器。
+  有两种类型的node：manager和worker
+  manager node的任务：
+- maintaining cluster state
+- scheduling services
+- serving swarm mode HTTP API endpoints
+  更改角色：
+#+BEGIN_SRC 
+# manager to worker
+$ docker demote
+# worker to manager
+$ docker promote
+#+END_SRC
+[[https://docs.docker.com/engine/swarm/images/swarm-diagram.png]]
+**** Services如何工作
+- Services, tasks, containers
+A container is an isolated process. In the swarm mode model, each task invokes exactly one container. A task is analogous to a “slot” where the scheduler places a container. Once the container is live, the scheduler recognizes that the task is in a running state. If the container fails health checks or terminates, the task terminates.    
+[[https://docs.docker.com/engine/swarm/images/services-diagram.png]]
+- Tasks and Scheduling
+[[https://docs.docker.com/engine/swarm/images/service-lifecycle.png]]
+- Replicated and global services
+两种服务部署方式:replicated和global
+[[https://docs.docker.com/engine/swarm/images/replicated-vs-global.png]]
+**** PKI如何工作
+
+[[https://docs.docker.com/engine/swarm/images/tls.png]]
 * vagrant
