@@ -1,0 +1,209 @@
+* ES 5.1
+** Getting Started
+Elasticsearch is a highly scalable open-source full-text search and analytics engine. 
+*** 基本概念
+- Near Realtime(NRT)
+  从你index一个文档到它变成可搜索的延时(一般是一秒)很小
+- Cluster
+  一个Cluster就是一个或多个nodes(servers)的集合。他们保存你的所有数据并提供联合体的索引和跨所有nodes的搜索能力。
+一个Cluster由一个唯一的名字来标识(默认为elasticsearch).这个名字很重要，因为一个node只能
+通过这个名字来加入到cluster。
+- Node
+  一个node就是cluster中的一个server，保存你的数据，参与集群的indexing和搜索能力。一个node也
+由一个名字来标识，默认为一个随机的UUID(在node启动时分配).默认每个node一开始会加入到一个"slasticsearch"
+的集群中。
+- Index
+  一个index是一个具有某些类似特性的文档组成的集合。一个index也由一个名字(必须是小写的)来标识。
+- Type
+  在index内部，你可以定义一个或多个types。一个type是你的index的一个逻辑分类/分区，语义完全由你决定。
+通常，一个type用于定义具有一系列共同部分(field)的文档。
+- Document
+  一个document是一个能被index的基本信息单元。一个文档表示为JSON格式。 
+- Shards & Replicas
+  一个index可能存储太大的数据超过一个node的限制。为了解决这个问题，允许你将index在分为多个片，叫做shards.
+在创建index时，你可以简单地定义你期望的shards数目。每个shards自身是一个全功能其独立的"index"，能运行在集群
+的任何nodes上。
+  shards重要的两个原因:
+  1. 允许你水平的分离/扩展你的内容volume
+  2. 允许你跨shards地分布式和并行操作来增加性能和吞吐量
+  Replica重要的原因：
+  1. 针对shard/nodes的错误提供高可用性
+  2. 扩展你的搜索volume和吞吐量
+*** 安装
+- Java JDK
+要求Java 8.
+- 下载
+#+BEGIN_SRC shell
+$ curl -L -O https://artifacts.elastic.co/downloads/elasticsearch/elasticsearch-5.1.1.tar.gz
+#+END_SRC
+- 安装
+#+BEGIN_SRC 
+$ tar -xvf elasticsearch-5.1.1.tar.gz
+$ cd elasticsearch-5.1.1/bin
+$ ./elasticsearch
+或
+$ ./elasticsearch -Ecluster.name=my_cluster_name -Enode.name=my_node_name
+#+END_SRC
+- 后台运行
+#+BEGIN_SRC shell
+$ ./bin/elasticsearch -d -p pid
+#停止
+$ kill `cat pid`
+#+END_SRC
+- 配置
+默认加载的配置文件为$ES_HOME/config/elasticsearch.yml。
+也通过命令行指定，使用-E语法
+#+BEGIN_SRC shell
+$ ./bin/elasticsearch -d -Ecluster.name=my_cluster -Enode.name=node_1
+#+END_SRC
+Elasticsearch由2个配置文件
+1. elasticsearch.yml 配置elasticsearch
+2. log4j2.properties配置elasticsearch logging
+文件内容中的环境变量${...}，不保存在文件中需要提示输入的变量${prompt.xxx}
+重要的配置项
+  - path.data and path.logs
+  - cluster.name
+  - node.name
+  - bootstrap.memory_lock
+  - network.host
+  - discovery.zen.ping.unicast.hosts
+  - discovery.zen.minimum_master_nodes
+*** REST API
+   访问数据的模式
+#+BEGIN_SRC 
+<REST Verb> /<Index>/<Type>/<ID>
+#+END_SRC
+**** 集群健康 (_cat API)
+   #+BEGIN_SRC  shell
+   $ curl -XGET 'localhost:9200/_cat/health?v&pretty'
+   # 回应为green，yellow，red
+   # 列出集群中的所有nodes列表
+   $ curl -XGET 'localhost:9200/_cat/nodes?v&pretty'   
+   # 列出所有index
+   $ curl -XGET 'localhost:9200/_cat/indices?v&pretty'
+   #+END_SRC
+**** 创建index
+   #+BEGIN_SRC shell
+   $ curl -XPUT 'localhost:9200/customer?pretty&pretty'
+   #+END_SRC
+**** 删除索引
+   #+BEGIN_SRC shell
+   $ curl -XDELETE 'localhost:9200/customer?pretty&pretty'
+   #+END_SRC
+**** 索引和查询一个文档
+   #+BEGIN_SRC shell
+   $ curl -XPUT 'localhost:9200/customer/external/1?pretty&pretty' -d'
+     {
+        "name": "John Doe"
+     }'
+   $ curl -XGET 'localhost:9200/customer/external/1?pretty&pretty'
+   #+END_SRC
+**** 修改数据 
+#+BEGIN_SRC shell
+- 索引和替换文档
+# 指定ID
+$ curl -XPUT 'localhost:9200/customer/external/2?pretty&pretty' -d'
+{
+  "name": "Jane Doe"
+}'
+# 不指定ID
+$ curl -XPOST 'localhost:9200/customer/external?pretty&pretty' -d'
+{
+  "name": "Jane Doe"
+}'
+- 更新文档
+$ curl -XPOST 'localhost:9200/customer/external/1/_update?pretty&pretty' -d'
+{
+  "name": "Jane Doe"
+}'
+#也可以使用脚本 ctx._source代表当前的源文件
+$ curl -XPOST 'localhost:9200/customer/external/1/_update?pretty&pretty' -d'
+{
+  "script" : "ctx._source.age += 5"
+}'
+- 删除文档
+$ curl -XDELETE 'localhost:9200/customer/external/2?pretty&pretty'
+- 批处理(_bulk API)
+curl -XPOST 'localhost:9200/customer/external/_bulk?pretty&pretty' -d'
+{"index":{"_id":"1"}}
+{"name": "John Doe" }
+{"index":{"_id":"2"}}
+{"name": "Jane Doe" }'
+#+END_SRC
+**** 探测你的数据
+- 搜索API
+两种基本方法来进行搜素：
+1. 通过REST request URI来发送搜索参数
+2. 通过REST request body来发送搜索参数
+#+BEGIN_SRC shell
+# _search代表搜索bank这个index， q=*达标匹配这个index的所有文档 sort结果排序方式
+$ curl -XGET 'localhost:9200/bank/_search?q=*&sort=account_number:asc&pretty&pretty'
+$ curl -XGET 'localhost:9200/bank/_search?pretty' -d'
+{
+  "query": { "match_all": {} },
+  "sort": [
+    { "account_number": "asc" }
+  ]
+}'
+#+END_SRC
+- 查询语言 (Query DSL)
+#+BEGIN_SRC shell
+$ curl -XGET 'localhost:9200/bank/_search?pretty' -d'
+{
+  "query": { "match_all": {} }, # "query": { "match": { "account_number": 20 } }
+  "from": 10, #从0开始的，不指定的话默认从0开始
+  "size": 10，
+  "sort": { "balance": { "order": "desc" } }，
+  "_source": ["account_number", "balance"]  #指定返回内容选择，默认为全部
+}'
+# boolean查询
+#+BEGIN_SRC  json
+"query": {
+    "bool": {
+      "must": [ #"should"等于or， must等于and， must_not都不能满足
+        { "match": { "address": "mill" } },
+        { "match": { "address": "lane" } }
+      ],
+      "must_not": [
+        { "match": { "state": "ID" } }
+      ]
+    }
+  }
+#+END_SRC
+#+END_SRC
+- 执行过滤
+文档的score(返回结果中的_score)，代表文档有多匹配我们的查询条件。
+We can substitute any other queries into the query and the filter parts. 
+#+BEGIN_SRC json
+{
+  "query": {
+    "bool": {
+      "must": { "match_all": {} },
+      "filter": {
+        "range": {
+          "balance": {
+            "gte": 20000,
+            "lte": 30000
+          }
+        }
+      }
+    }
+  }
+}
+#+END_SRC
+- 执行聚合(*重点！！！*)
+Aggregations provide the ability to group and extract statistics from your data.
+#+BEGIN_SRC shell
+$ curl -XGET 'localhost:9200/bank/_search?pretty' -d'
+{
+  "size": 0,
+  "aggs": {
+    "group_by_state": {
+      "terms": {
+        "field": "state.keyword"
+      }
+    }
+  }
+}'
+
+#+END_SRC
