@@ -1,0 +1,8 @@
+{
+	"service": {
+		"name": "es",
+		"port": 9200,
+		"tags": ["master", "data"]
+	}
+}
+

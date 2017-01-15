@@ -1,0 +1,78 @@
+# -*- mode: ruby -*-
+# vi: set ft=ruby :
+
+$script = <<SCRIPT
+sudo apt-get update
+sudo apt-get install -y apt-transport-https
+echo "add Oracle JDK8 repo ..."
+echo "deb http://ppa.launchpad.net/webupd8team/java/ubuntu xenial main" | sudo tee -a /etc/apt/sources.list
+echo "deb-src http://ppa.launchpad.net/webupd8team/java/ubuntu xenial main" | sudo tee -a /etc/apt/sources.list
+echo "deb https://artifacts.elastic.co/packages/5.x/apt stable main" | sudo tee -a /etc/apt/sources.list
+
+sudo apt-key adv --keyserver hkp://keyserver.ubuntu.com:80 --recv-keys EEA14886
+wget -qO - https://artifacts.elastic.co/GPG-KEY-elasticsearch | sudo apt-key add -
+echo debconf shared/accepted-oracle-license-v1-1 select true |sudo debconf-set-selections
+echo "Installing dependencies ..."
+sudo apt-get update
+sudo apt-get install -y unzip curl
+sudo apt-get install -y oracle-java8-installer elasticsearch
+echo "Fetching Consul version ${CONSUL_DEMO_VERSION} ..."
+cd /tmp/
+curl -s https://releases.hashicorp.com/consul/${CONSUL_DEMO_VERSION}/consul_${CONSUL_DEMO_VERSION}_linux_amd64.zip -o consul.zip
+echo "Installing Consul version ${CONSUL_DEMO_VERSION} ..."
+unzip consul.zip
+sudo chmod +x consul
+sudo mv consul /usr/bin/consul
+sudo mkdir /etc/consul.d
+sudo chmod a+w /etc/consul.d
+echo "Fetching Consul-Template version ${CONSUL_TEMP_DEMO_VERSION} ..."
+cd /tmp/
+curl -s https://releases.hashicorp.com/consul-template/${CONSUL_TEMP_DEMO_VERSION}/consul-template_${CONSUL_TEMP_DEMO_VERSION}_linux_amd64.zip -o consul_temp.zip
+echo "Installing Consul-Template version ${CONSUL_TEMP_DEMO_VERSION} ..."
+unzip consul_temp.zip
+sudo chmod +x consul-template
+sudo mv consul-template /usr/bin/consul-template
+sudo /bin/systemctl daemon-reload
+sudo /bin/systemctl enable elasticsearch.service
+SCRIPT
+
+# Specify a Consul version
+CONSUL_DEMO_VERSION = ENV['CONSUL_DEMO_VERSION'] || "0.7.2"
+CONSUL_TEMP_DEMO_VERSION = ENV['CONSUL_TEMP_DEMO_VERSION'] || "0.18.0-rc2"
+
+# Specify a custom Vagrant box for the demo
+DEMO_BOX_NAME = ENV['DEMO_BOX_NAME'] || "debian/jessie64"
+
+# Vagrantfile API/syntax version.
+# NB: Don't touch unless you know what you're doing!
+VAGRANTFILE_API_VERSION = "2"
+
+Vagrant.configure(VAGRANTFILE_API_VERSION) do |config|
+  config.vm.box = DEMO_BOX_NAME
+
+  config.vm.provision "shell",
+                          inline: $script,
+                          env: {'CONSUL_DEMO_VERSION' => CONSUL_DEMO_VERSION, 'CONSUL_TEMP_DEMO_VERSION' => CONSUL_TEMP_DEMO_VERSION}
+
+  config.vm.provider :virtualbox do |vb|
+      vb.customize [
+        "modifyvm", :id,
+        "--memory", "1024",
+      ]
+  end
+
+  config.vm.define "n1" do |n1|
+      n1.vm.hostname = "n1"
+      n1.vm.network "private_network", ip: "172.20.20.10"
+  end
+
+  config.vm.define "n2" do |n2|
+      n2.vm.hostname = "n2"
+      n2.vm.network "private_network", ip: "172.20.20.11"
+  end
+
+  config.vm.define "n3" do |n3|
+      n3.vm.hostname = "n3"
+      n3.vm.network "private_network", ip: "172.20.20.12"
+  end
+end

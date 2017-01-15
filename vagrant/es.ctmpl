@@ -1,0 +1,5 @@
+cluster.name: hz-dev
+node.master: true
+node.data: true
+network.host: [_eth1_]
+discovery.zen.ping.unicast.hosts: [{{range service "es"}} "{{.Address}}", {{end}}]
